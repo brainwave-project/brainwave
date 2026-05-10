@@ -54,6 +54,8 @@ jobs:
 
       - name: Build and push ${{ matrix.service }}
         uses: docker/build-push-action@v5
+        env:
+          BUILDKIT_INLINE_CACHE: 1
         with:
           context: ./${{ matrix.service }}/
           push: true
@@ -61,5 +63,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          secrets: |
+          build-args: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
