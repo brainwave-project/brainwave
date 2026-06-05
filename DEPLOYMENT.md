@@ -177,6 +177,74 @@ docker compose -f docker/compose.yml -f docker/compose.prod.yml \
   --env-file env/.env.prod --profile services up -d
 ```
 
+## Semantic Layer (Phase 1)
+
+KnowHub's semantic search runs entirely in-network: a local **Ollama** container
+serves the `nomic-embed-text` embedding model (768-dim), and embeddings are
+stored in **pgvector**. There is **no external API and no API key** — document
+text never leaves the Docker network.
+
+### Infrastructure additions
+
+| Component | Change |
+|-----------|--------|
+| `postgres` | Image swapped to `pgvector/pgvector:pg16` (drop-in superset of `postgres:16`). |
+| `ollama` | New service serving the embedding model. Data persisted in the `brainwave-ollama-data` volume. |
+| `ollama-init` | One-shot container that pulls `${OLLAMA_MODEL}` on first boot, then exits. |
+
+### First-run model pull
+
+On a fresh stack, `ollama-init` pulls the model (~274 MB) before KnowHub's
+worker can embed anything. This is a **one-time** download cached in the
+`brainwave-ollama-data` volume; subsequent boots reuse it.
+
+```bash
+# Bring up infra (ollama-init pulls the model automatically on first run)
+docker compose -f docker/compose.yml -f docker/compose.dev.yml \
+  --env-file env/.env.dev --profile services up -d
+
+# Watch the (one-time) model download
+docker compose logs -f ollama-init
+
+# Verify the model is available
+curl http://localhost:11434/api/tags
+```
+
+KnowHub tolerates a not-yet-ready model: documents stay in `embedding_status =
+PENDING` and the worker indexes them once Ollama responds. No uploads are
+blocked by embedding.
+
+### Existing databases — pgvector migration
+
+Fresh dev databases are bootstrapped from `infra/postgres/init/*.sql` (which now
+includes `05-semantic.sql`). For an **existing** database, after swapping to the
+`pgvector/pgvector:pg16` image, apply the Prisma migration (the connection must
+have superuser to run `CREATE EXTENSION vector`):
+
+```bash
+cd know-hub/
+npx prisma migrate deploy
+```
+
+### Configuration
+
+Non-secret defaults live in `infra/env/services/know-hub.dev.env`:
+
+```env
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=nomic-embed-text
+OLLAMA_BATCH_SIZE=8
+OLLAMA_TIMEOUT_MS=30000
+SEMANTIC_WORKER_ENABLED=true   # set false to disable in-process indexing
+SIMILARITY_THRESHOLD=0.60      # default minScore for search
+QUERY_CACHE_SIZE=500
+QUERY_CACHE_TTL_MS=300000
+```
+
+Search is exposed through Kong at `/api/semantic/*` (same JWT validation as the
+rest of KnowHub). Reindexing (`POST /api/semantic/reindex/:documentId`) requires
+the `ADMIN` role.
+
 ## Key Differences
 
 | Aspect | Development | Production |
