@@ -1,3 +1,27 @@
+[submodule "infra"]
+	path = infra
+	url = https://github.com/brainwave-project/infra.git
+[submodule "core"]
+	path = core
+	url = https://github.com/brainwave-project/core.git
+[submodule "auth-hub"]
+	path = auth-hub
+	url = https://github.com/brainwave-project/auth-hub.git
+[submodule "user-hub"]
+	path = user-hub
+	url = https://github.com/brainwave-project/user-hub.git
+[submodule "know-hub"]
+	path = know-hub
+	url = https://github.com/brainwave-project/know-hub.git
+[submodule "audit-hub"]
+	path = audit-hub
+	url = https://github.com/brainwave-project/audit-hub.git
+[submodule "agent-hub"]
+	path = agent-hub
+	url = https://github.com/brainwave-project/agent-hub.git
+[submodule "ui"]
+	path = ui
+	url = https://github.com/brainwave-project/ui.git
 [submodule "docs"]
 	path = docs
 	url = https://github.com/brainwave-project/docs
