@@ -76,12 +76,14 @@ cd core && npm run dev     # tsc --watch
 ```bash
 cd agent-hub
 uv sync                                                              # create .venv + install deps
+uv sync --extra rerank                                               # + cross-encoder deps (sentence-transformers, CPU torch — heavy, optional)
 uv run python -m agent_hub.main                                      # serve on :3004
 uv run uvicorn agent_hub.transport.http.app:app --reload --port 3004 # hot-reload alternative
 uv run ruff check .                                                  # lint
 uv run pytest                                                        # run tests
 uv run pytest tests/test_crag_graph.py                              # run a single test file
 python scripts/gen_proto.py                                          # regenerate gRPC stubs from proto/knowhub.proto
+python scripts/seed_langfuse.py                                      # push DEFAULT_PROMPTS into Langfuse (seed a fresh project)
 uv run python -m agent_hub.eval.ragas_eval                           # run RAGAS outcome evaluation (M8)
 ```
 
@@ -170,6 +172,12 @@ Stateless reasoning service — reads and re-scores, never writes to the triple 
 - The two domains (`application/crag` and `application/ingestion`) share only `adapters/` and are otherwise fully isolated — neither imports from the other
 - RAGAS outcome evaluation lives in `src/agent_hub/eval/ragas_eval.py` (M8)
 
+**Runtime governance (§13.5) — hot-tunable config without redeploy.** CRAG's guardrails (loops, top-k, temperatures, graph-shape toggles, rerank settings) ship as `Settings` defaults but are overlaid at runtime by a single JSONB row in `agent.agent_governance` (`adapters/governance_repo.py`). The row is cached in memory so the hot path never touches the DB; ADMIN-only writes are re-validated through the `GovernanceSettings` pydantic model before persisting. Managed via `GET/PUT /api/agent/governance` and `POST /api/agent/governance/reset`; the UI exposes this in the **KnowOps / Retrieval Lab** page. Other agent routes: `GET /api/agent/models` (LLM catalog), `GET /api/agent/metrics`, `GET /api/agent/ping`.
+
+**Cross-encoder reranking (two-stage retrieval).** When `CROSS_ENCODER_ENABLED=true`, stage 1 (pgvector bi-encoder) fetches a wide candidate pool (`RERANK_CANDIDATE_K`) and stage 2 (`adapters/reranker.py`, a sentence-transformers `CrossEncoder`) re-scores each (query, chunk) pair jointly, keeping the top `RERANK_TOP_N`. **Fail-open**: the model is lazy-loaded from the optional `rerank` extra; any missing-package / download / inference error logs and falls back to stage-1 order (`NullReranker`), never breaking a chat turn. Inference runs off the event loop via `asyncio.to_thread`.
+
+**Langfuse-managed prompts (§13.5).** Every reasoning system prompt is authored/versioned in Langfuse under a stable key (`crag/grade`, `crag/rewrite-query`, `crag/generate`, `crag/check-grounded`, `ingestion/classify`) and fetched by name at call time via `adapters/prompts.py` (`PromptRegistry`, cached per process). The bundled `DEFAULT_PROMPTS` are only a fallback for when Langfuse is disabled/unreachable, and are the seed source for `scripts/seed_langfuse.py`. Edit a prompt in the Langfuse UI, publish the `PROMPT_LABEL` (`production`) label, and the next run picks it up — no redeploy.
+
 ### @brainwave-project/core
 
 Shared ESM library. Key exports:
@@ -191,7 +199,7 @@ React 18 + Vite + TypeScript. Key libraries:
 - **React Hook Form** + **Zod** — form validation
 - **React Router v6** — client-side routing
 
-Feature modules live under `src/features/`: `auth`, `chat`, `documents`, `semantic`, `users`.
+Feature modules live under `src/features/`: `auth`, `chat`, `dashboard`, `documents`, `governance`, `knowops`, `semantic`, `users`. `governance` + `knowops` drive the agent-hub governance store and Retrieval Lab (`src/pages/knowops/RetrievalLabPage.tsx`, `GovernancePage.tsx`); the governance API client is `src/api/governance.api.ts`.
 
 ## Environment Variables
 
@@ -205,7 +213,7 @@ Two-tier config (see `infra/env/README.md`):
 - **auth-hub**: uses split `DB_HOST`, `DB_USER`, `DB_PASS` — no `DATABASE_URL`. No Prisma in production.
 - **user-hub**: requires `DATABASE_URL` (full URL), `AUTH_HUB_GRPC_HOST` + `AUTH_HUB_GRPC_PORT` separately.
 - **know-hub**: requires `DATABASE_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` (not `MINIO_USER`/`MINIO_PASS`). `GRPC_ENABLED=true` and `GRPC_PORT=50052` activate the `DocumentInternal` gRPC server for agent-hub.
-- **agent-hub**: `OLLAMA_BASE_URL`, `AGENT_REASONING_MODEL` (use the full pulled tag e.g. `llama3.1:8b-instruct-q4_K_M`, not a shorthand), `KNOW_HUB_URL`, `KNOW_HUB_GRPC_PORT`, `DATABASE_URL`, `KAFKA_BROKERS`, `CRAG_MAX_LOOPS` (default 2), `LANGFUSE_ENABLED` (default false). Config validated at startup by pydantic-settings (`src/agent_hub/config.py`).
+- **agent-hub**: `OLLAMA_BASE_URL`, `AGENT_REASONING_MODEL` (use the full pulled tag e.g. `llama3.1:8b-instruct-q4_K_M`, not a shorthand), `KNOW_HUB_URL`, `KNOW_HUB_GRPC_PORT`, `DATABASE_URL`, `KAFKA_BROKERS`, `CRAG_MAX_LOOPS` (default 2), `LANGFUSE_ENABLED` (default false). CRAG guardrails (`CRAG_TOP_K`, `CRAG_MIN_SCORE`, `CRAG_MAX_REGEN`, per-node `CRAG_*_TEMPERATURE`, `CRAG_QUERY_REWRITE_ENABLED`, `CRAG_GROUNDING_ENABLED`) are the **shipped defaults** — the governance store overrides them at runtime. Reranking: `CROSS_ENCODER_ENABLED` (default false), `RERANK_MODEL`, `RERANK_CANDIDATE_K`, `RERANK_TOP_N`. Prompts: `PROMPT_LABEL` (default `production`), plus `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`. All validated at startup by pydantic-settings (`src/agent_hub/config.py`).
 
 ## Dev vs. Production
 
@@ -234,6 +242,7 @@ Production images are built and pushed via `.github/workflows/publish-services.y
 | Kong Admin API | http://localhost:8001 |
 | Kong Manager (GUI) | http://localhost:8002 |
 | MinIO Console | http://localhost:9001 |
+| Langfuse (LLM prompts/traces) | http://localhost:3060 |
 | Grafana | http://localhost:3030 (admin/admin) |
 | Prometheus | http://localhost:9090 |
 | Alertmanager | http://localhost:9093 |
@@ -248,10 +257,13 @@ Production images are built and pushed via `.github/workflows/publish-services.y
 Postgres uses separate schemas, each owned by a dedicated role:
 
 - `user_management` — users, roles (user-hub)
-- `doc` — document metadata, embedding_status, doc_type, topic, chunk_strategy (know-hub)
+- `doc` — document metadata, embedding_status, doc_type, topic, chunk_strategy (know-hub; agent columns added by `41-doc-agent-columns.sql`)
 - `sem` — vector chunks (pgvector, know-hub semantic layer)
+- `chat` — chat_sessions, chat messages (know-hub, owned by `knowhub_app`; `infra/postgres/init/06-chat.sql`)
 - `audit` — event log (audit-hub)
-- `agent` — agent_runs, agent_steps, LangGraph checkpoint tables (agent-hub; initialized from `infra/postgres/init/40-agent.sql`)
+- `agent` — agent_runs, agent_steps, agent_governance (single-row JSONB runtime config), LangGraph checkpoint tables (agent-hub; initialized from `infra/postgres/init/40-agent.sql`)
+
+Langfuse is self-hosted as an infra container and gets its **own database** (not just a schema), bootstrapped by `infra/postgres/init/07-langfuse.sh` with a dedicated role. It manages its own migrations.
 
 Fresh databases are initialized from `infra/postgres/init/*.sql` (runs once on container creation). For existing databases adding pgvector: `cd know-hub && npx prisma migrate deploy` (requires superuser for `CREATE EXTENSION vector`).
 
