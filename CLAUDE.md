@@ -36,6 +36,31 @@ make logs           # Tail all logs
 make logs s=kong    # Tail a single service
 make urls           # Print all management UI URLs
 make lint           # Validate all compose files + Kong config
+make staging        # Start staging stack
+make staging-services
+make prod           # Start prod stack
+make prod-services  # Full prod stack (used by "Dev vs. Production" below)
+make no-restart     # Clear the restart policy on existing brainwave containers
+```
+
+Dev and observability containers use `restart: "no"` so they do **not** start with
+Docker Desktop. A restart policy is only applied at container *creation*, so
+containers created before that change keep their old policy — `make no-restart`
+rewrites them in place (`docker update --restart=no`). Prod (`on-failure:3`) and
+staging (`always`) keep auto-restart deliberately.
+
+### Evaluation stack
+
+```bash
+make evals          # Full flow: up → seed corpus → score → report
+make evals-up       # Lean eval stack only
+make evals-seed     # Ingest the eval corpus, wait for INDEXED
+make evals-run      # Retrieval suite only (fast — no LLM judge)
+make evals-ragas    # Generation suite only (slow — local 8B judge)
+make evals-gate     # Compare newest report to baseline; non-zero on regression
+make evals-promote  # Adopt the newest report as the baseline
+make evals-shell    # Interactive shell in the eval runner
+make evals-down     # Stop the eval stack
 ```
 
 ### UI (run separately — not in Docker)
@@ -89,7 +114,7 @@ uv run python -m agent_hub.eval.ragas_eval                           # run RAGAS
 
 ### Tests
 
-TypeScript services (`auth-hub`, `user-hub`, `know-hub`, `audit-hub`, `core`) have no test suite yet — `npm test` exits with no output. `agent-hub` has `pytest` tests in `agent-hub/tests/` (`test_crag_graph.py`, `test_ingestion_crew.py`). Validation otherwise relies on TypeScript compilation and integration testing via the running stack.
+TypeScript services (`auth-hub`, `user-hub`, `know-hub`, `audit-hub`, `core`) have no test suite yet — `npm test` exits with no output. `agent-hub` has `pytest` tests in `agent-hub/tests/` (`test_crag_graph.py`, `test_ingestion_crew.py`, `test_governance.py`). Validation otherwise relies on TypeScript compilation and integration testing via the running stack.
 
 ## Architecture
 
@@ -177,6 +202,50 @@ Stateless reasoning service — reads and re-scores, never writes to the triple 
 **Cross-encoder reranking (two-stage retrieval).** When `CROSS_ENCODER_ENABLED=true`, stage 1 (pgvector bi-encoder) fetches a wide candidate pool (`RERANK_CANDIDATE_K`) and stage 2 (`adapters/reranker.py`, a sentence-transformers `CrossEncoder`) re-scores each (query, chunk) pair jointly, keeping the top `RERANK_TOP_N`. **Fail-open**: the model is lazy-loaded from the optional `rerank` extra; any missing-package / download / inference error logs and falls back to stage-1 order (`NullReranker`), never breaking a chat turn. Inference runs off the event loop via `asyncio.to_thread`.
 
 **Langfuse-managed prompts (§13.5).** Every reasoning system prompt is authored/versioned in Langfuse under a stable key (`crag/grade`, `crag/rewrite-query`, `crag/generate`, `crag/check-grounded`, `ingestion/classify`) and fetched by name at call time via `adapters/prompts.py` (`PromptRegistry`, cached per process). The bundled `DEFAULT_PROMPTS` are only a fallback for when Langfuse is disabled/unreachable, and are the seed source for `scripts/seed_langfuse.py`. Edit a prompt in the Langfuse UI, publish the `PROMPT_LABEL` (`production`) label, and the next run picks it up — no redeploy.
+
+### Evaluation harness (`agent-hub/src/agent_hub/eval/`)
+
+Offline measurement for the RAG pipeline — retrieval metrics, Arabic
+normalisation, RAGAS generation scoring, and a regression gate. Full detail in
+`agent-hub/src/agent_hub/eval/README.md`.
+
+Runs on a **lean stack** (`infra/docker/compose.evals.yml`): postgres, mongodb,
+minio, kafka, ollama, know-hub, plus a one-shot `eval-runner` container. No Kong,
+Keycloak, auth-hub, user-hub, audit-hub, or observability stack. Two constraints
+drive that shape:
+
+- **Kong/Keycloak are skippable** because know-hub's `requirePermission` reads
+  `X-User-Roles` only — it never validates a JWT. The eval client supplies the
+  headers Kong would have injected (`X-User-Id` + `X-User-Roles`).
+- **agent-hub's service is deliberately NOT started.** Its Kafka consumer
+  subscribes to `DOCUMENT_UPLOADED` unconditionally, so running it beside
+  know-hub's semantic worker double-indexes the corpus. The harness runs as
+  `eval-runner` and builds the CRAG graph in-process — it needs agent-hub's
+  *code*, not its HTTP server.
+- The overlay forces `SEMANTIC_WORKER_ENABLED=true` (dev default is `false`) and
+  `SIMILARITY_THRESHOLD=0.0` — know-hub's 0.60 default would truncate rankings
+  before the metrics saw them.
+
+Modules that need no stack: `retrieval_metrics.py` (hit rate, recall@k,
+precision@k, MRR, NDCG@k, MAP — hand-written, each docstring naming when the
+metric misleads), `stats.py` (bootstrap CIs, paired deltas, sample-size),
+`arabic/normalize.py` (per-transform normalisation), `datasets.py`. Stack-bound:
+`seed.py`, `retrieval.py`, `ragas_eval.py`.
+
+`ragas_eval.py` drives CRAG via `build_crag_graph(...).ainvoke()` with
+`checkpointer=None` and a `NullRecorder` — no Postgres needed — and pins the
+RAGAS judge to local Ollama so no document text leaves the network.
+
+The Arabic corpus is seeded with deliberate orthographic traps (alef/hamza,
+taa marbuta, tatweel, diacritics, alef-maqsura, Arabic-Indic digits) plus
+untrapped controls. `tests/test_eval_corpus.py` asserts every trap still responds
+to normalisation — an eval that cannot detect the effect it was built to detect
+reports a confident number instead of an error.
+
+Known finding the harness measures (does not fix): `sem.document_chunks.content_tsv`
+is `GENERATED ALWAYS AS (to_tsvector('english', content)) STORED`
+(`infra/postgres/init/05-semantic.sql`), so the lexical half of hybrid RRF search
+is close to inert on Arabic.
 
 ### @brainwave-project/core
 
