@@ -60,7 +60,8 @@ make evals-ragas    # Generation suite only (slow — local 8B judge)
 make evals-gate     # Compare newest report to baseline; non-zero on regression
 make evals-promote  # Adopt the newest report as the baseline
 make evals-shell    # Interactive shell in the eval runner
-make evals-down     # Stop the eval stack
+make evals-lab      # Lean eval stack + eval-api (:3005) for the UI's Evaluation section
+make evals-down     # Stop the eval stack (incl. eval-api)
 ```
 
 ### UI (run separately — not in Docker)
@@ -268,7 +269,11 @@ React 18 + Vite + TypeScript. Key libraries:
 - **React Hook Form** + **Zod** — form validation
 - **React Router v6** — client-side routing
 
-Feature modules live under `src/features/`: `auth`, `chat`, `dashboard`, `documents`, `governance`, `knowops`, `semantic`, `users`. `governance` + `knowops` drive the agent-hub governance store and Retrieval Lab (`src/pages/knowops/RetrievalLabPage.tsx`, `GovernancePage.tsx`); the governance API client is `src/api/governance.api.ts`.
+Feature modules live under `src/features/`: `auth`, `chat`, `dashboard`, `documents`, `evaluation`, `governance`, `knowops`, `semantic`, `users`.
+
+Sidebar groups: **Know Ops**, **Evaluation**, and **Platform** (Profile · Observability · Governance · Administration · Activity — routes unchanged, grouped in `Sidebar.tsx`).
+
+The **Evaluation** section (`src/pages/evaluation/`, `src/features/evaluation/`, client `src/api/eval.api.ts`) — Dataset Construction (corpus, items, synthetic generation, pooled judging, label audit, chunking, index, version diff) · Data Lab · Retrieval · Experiments (reports + run sweeps/failure analysis) · Stats Lab (bootstrap, CI coverage, CLT, power, p-hacking simulators) · Learning Path (verified missions) — talks to agent-hub's standalone Eval Lab API (`agent_hub.eval.lab`, `eval-api` container on :3005, started by `make evals-lab`) through the Vite proxy `/api/eval`, not Kong. Because the lean eval stack has no Keycloak, dev builds serve `/evaluation/*` without a session; production builds keep it behind `ProtectedRoute`. Lab guards (frozen datasets immutable, no ad-hoc holdout runs, pre-registration, logged holdout access) are documented in `agent-hub/src/agent_hub/eval/README.md`. `governance` + `knowops` drive the agent-hub governance store and Retrieval Lab (`src/pages/knowops/RetrievalLabPage.tsx`, `GovernancePage.tsx`); the governance API client is `src/api/governance.api.ts`.
 
 ## Environment Variables
 
