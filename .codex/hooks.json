@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash 'C:\\Users\\ALIEN WARE\\repo\\brainwave\\.codex\\hooks\\asd-ste100-reminder.sh'",
+            "statusMessage": "Applying ASD-STE100 style reminder"
+          }
+        ]
+      }
+    ]
+  }
+}

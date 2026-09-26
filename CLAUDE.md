@@ -61,6 +61,7 @@ make evals-gate     # Compare newest report to baseline; non-zero on regression
 make evals-promote  # Adopt the newest report as the baseline
 make evals-shell    # Interactive shell in the eval runner
 make evals-lab      # Lean eval stack + eval-api (:3005) for the UI's Evaluation section
+make evals-release-gate  # Eval Lab release gate on the exported snapshot (same check CI runs)
 make evals-down     # Stop the eval stack (incl. eval-api)
 ```
 
@@ -115,7 +116,7 @@ uv run python -m agent_hub.eval.ragas_eval                           # run RAGAS
 
 ### Tests
 
-TypeScript services (`auth-hub`, `user-hub`, `know-hub`, `audit-hub`, `core`) have no test suite yet — `npm test` exits with no output. `agent-hub` has `pytest` tests in `agent-hub/tests/` (`test_crag_graph.py`, `test_ingestion_crew.py`, `test_governance.py`). Validation otherwise relies on TypeScript compilation and integration testing via the running stack.
+TypeScript services (`auth-hub`, `user-hub`, `know-hub`, `audit-hub`, `core`) have no test suite yet — `npm test` exits with no output. `agent-hub` has `pytest` tests in `agent-hub/tests/` (`test_crag_graph.py`, `test_ingestion_crew.py`, `test_governance.py`, and the eval suite `test_eval_*.py`, `test_retrieval_metrics.py`, `test_stats_extensions.py` — the Eval Lab tests fake know-hub and the LLM, so they need no stack). `agent-hub/.github/workflows/eval-gate.yml` runs the eval tests and the release gate on pull requests. Validation otherwise relies on TypeScript compilation and integration testing via the running stack.
 
 ## Architecture
 
@@ -243,6 +244,21 @@ untrapped controls. `tests/test_eval_corpus.py` asserts every trap still respond
 to normalisation — an eval that cannot detect the effect it was built to detect
 reports a confident number instead of an error.
 
+The Eval Lab's **generation half** (`eval/lab/`): `genmetrics.py` (faithfulness, answer
+relevance rubric + RAGAS embedding method, context precision/recall with label-based twins,
+claim-F1 correctness, binary answer verdict — each returns its steps), `pipeline.py` (a
+CRAG-shaped pipeline — retrieve → rerank + top-n → grade → generate → optional grounding —
+that judges each stage *given its input* and blames the first failing one; `fault` injects a
+break into one stage to test the attribution), `judgelab.py` (versioned `JudgeSpec`, validation
+against human labels: κ, fail recall, Rogan–Gladen corrected pass rate; position / verbosity /
+self-consistency probes; drift between judge runs), `release_gate.py` + `gate_cli.py` (a
+`GatePolicy` of preconditions and floor / ceiling / max_drop / non_inferior rules, with
+noise advisories from `stats.detectable_effect`; CLI exit 0 pass · 1 block · 2 cannot run).
+LLM calls go through `llm.py` (plain httpx to Ollama, pinned temperature + seed) so tests swap
+in a fake. Judged scores carry a judge fingerprint; the gate refuses to compare runs whose
+fingerprints differ. The CI snapshot lives in `eval/release/` (written by Release Gate → Export
+for CI). The hands-on course for this half is `docs/experiment-2/`.
+
 Known finding the harness measures (does not fix): `sem.document_chunks.content_tsv`
 is `GENERATED ALWAYS AS (to_tsvector('english', content)) STORED`
 (`infra/postgres/init/05-semantic.sql`), so the lexical half of hybrid RRF search
@@ -273,7 +289,7 @@ Feature modules live under `src/features/`: `auth`, `chat`, `dashboard`, `docume
 
 Sidebar groups: **Know Ops**, **Evaluation**, and **Platform** (Profile · Observability · Governance · Administration · Activity — routes unchanged, grouped in `Sidebar.tsx`).
 
-The **Evaluation** section (`src/pages/evaluation/`, `src/features/evaluation/`, client `src/api/eval.api.ts`) — Dataset Construction (corpus, items, synthetic generation, pooled judging, label audit, chunking, index, version diff) · Data Lab · Retrieval · Experiments (reports + run sweeps/failure analysis) · Stats Lab (bootstrap, CI coverage, CLT, power, p-hacking simulators) · Learning Path (verified missions) — talks to agent-hub's standalone Eval Lab API (`agent_hub.eval.lab`, `eval-api` container on :3005, started by `make evals-lab`) through the Vite proxy `/api/eval`, not Kong. Because the lean eval stack has no Keycloak, dev builds serve `/evaluation/*` without a session; production builds keep it behind `ProtectedRoute`. Lab guards (frozen datasets immutable, no ad-hoc holdout runs, pre-registration, logged holdout access) are documented in `agent-hub/src/agent_hub/eval/README.md`. `governance` + `knowops` drive the agent-hub governance store and Retrieval Lab (`src/pages/knowops/RetrievalLabPage.tsx`, `GovernancePage.tsx`); the governance API client is `src/api/governance.api.ts`.
+The **Evaluation** section (`src/pages/evaluation/`, `src/features/evaluation/`, clients `src/api/eval.api.ts` + `src/api/evalGen.api.ts`) — Golden Sets (corpus, items, synthetic generation, pooled judging, label audit, chunking, index, version diff) · Data Lab · Retrieval · Experiments (reports + run sweeps/failure analysis) · Stats Lab (bootstrap, CI coverage, CLT, power, p-hacking simulators) · Generation (metrics playground, instrumented pipeline runs, component attribution + fault injection, run compare) · Judge Lab (versioned rubrics, blind human labels, judge validation, position/verbosity/consistency probes, drift) · Release Gate (policy, evaluation, recorded decisions, CI export) — talks to agent-hub's standalone Eval Lab API (`agent_hub.eval.lab`, `eval-api` container on :3005, started by `make evals-lab`) through the Vite proxy `/api/eval`, not Kong. Because the lean eval stack has no Keycloak, dev builds serve `/evaluation/*` without a session; production builds keep it behind `ProtectedRoute`. Lab guards (frozen datasets immutable, no ad-hoc holdout runs, pre-registration, logged holdout access) are documented in `agent-hub/src/agent_hub/eval/README.md`. `governance` + `knowops` drive the agent-hub governance store and Retrieval Lab (`src/pages/knowops/RetrievalLabPage.tsx`, `GovernancePage.tsx`); the governance API client is `src/api/governance.api.ts`.
 
 ## Environment Variables
 
