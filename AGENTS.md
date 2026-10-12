@@ -2,6 +2,45 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
+## Current Focus: Evaluation Lab
+
+The active development area is the **Evaluation Lab**. Unless a task says
+otherwise, begin investigation in these three places:
+
+- `ui/src/pages/evaluation/`, `ui/src/features/evaluation/`,
+  `ui/src/api/eval.api.ts`, and `ui/src/api/evalGen.api.ts` for the React UI.
+- `agent-hub/src/agent_hub/eval/` and especially `eval/lab/` for evaluation,
+  statistics, judge, experiment, and release-gate behavior.
+- `infra/docker/compose.evals.yml` and the `evals-*` Make targets in
+  `infra/Makefile` for the lean runtime.
+
+The local Evaluation Lab intentionally requires **no login**:
+
+- Start its backend from `infra/` with `make evals-lab`; this brings up the lean
+  stack and the standalone `eval-api` on port 3005.
+- Start the UI separately from `ui/` with `npm run dev`, then open
+  `http://localhost:5173/evaluation/dataset`.
+- In Vite development builds, `/evaluation/*` is mounted outside
+  `ProtectedRoute`. The UI's `/api/eval` proxy talks directly to `eval-api` and
+  the evaluation API clients deliberately do not attach a JWT.
+- This exception is development-only. Production builds keep the Evaluation
+  routes behind `ProtectedRoute`; do not remove authentication from the rest of
+  the application or route Eval Lab through Kong merely to support local work.
+- Do not start the normal agent-hub service beside the eval stack: its Kafka
+  consumer would compete with know-hub's semantic worker and double-index the
+  corpus. The eval runner imports agent-hub code in-process instead.
+
+For Evaluation Lab changes, prefer the smallest relevant checks first:
+
+```bash
+cd agent-hub && uv run pytest tests/test_eval_lab.py tests/test_eval_lab_insight.py tests/test_eval_generation.py tests/test_eval_corpus.py tests/test_retrieval_metrics.py tests/test_stats_extensions.py tests/test_judge.py
+cd ui && npm run build
+cd ui && npm run lint
+```
+
+Use the full `make evals-lab` integration flow when a change crosses the UI/API
+boundary, needs know-hub or Ollama, or changes dataset/index/run persistence.
+
 ## Monorepo Layout
 
 ```
